@@ -26,11 +26,13 @@ Avoid repeatedly quitting/restarting WeChat. Only sign/restart during first setu
 
 ## Windows status
 
-`wx-cli` exposes a Windows binary and scans `Weixin.exe`, but this skill has not been verified on this user's Windows machine. For Windows:
+`wx-cli` exposes a Windows binary and scans `Weixin.exe`. This skill's wrapper script detects Windows account directories by reading `%APPDATA%\Tencent\xwechat\config\*.ini`, resolving the configured data root, then looking for `xwechat_files\<wxid>\db_storage`. For Windows:
 
+- Keep WeChat open and logged in before running `setup`, `chats`, or `sync`.
 - Use Administrator PowerShell when memory access fails.
-- Detect the platform and report that Windows is supported by the underlying tool but needs first-run verification.
+- If no sessions are listed, distinguish these causes: WeChat is not logged in, the Windows xwechat config file is absent, memory scanning lacks permission, or the selected account has no readable `db_storage`.
 - Keep the same state/dedupe rules.
+- Windows support is implemented in the wrapper, but each Windows machine still needs first-run verification because WeChat storage paths and permissions can differ.
 
 ## Incremental safety
 
@@ -64,3 +66,5 @@ For private chats and group chats, display names are not stable enough for repea
 3. Sync with `--chat-username <username>`.
 
 For groups, usernames usually end with `@chatroom`; for many private contacts, usernames may start with `wxid_`. Treat the `username` as the durable machine key and the display name only as a label for humans.
+
+If the user did not explicitly ask for 文件传输助手/filehelper, never go straight to `sync --chat-username filehelper`. Run `chats --limit 50` and present choices first. If `chats` cannot list sessions, fix setup/login/permission first instead of defaulting to filehelper.

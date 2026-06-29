@@ -41,7 +41,7 @@ cp -R wechat-chat-sync ~/.codex/skills/wechat-chat-sync
 
 ## 平台状态
 
-macOS 流程已验证。Windows 底层工具支持，但需要在 Windows 电脑上首次验证。
+macOS 流程已验证。Windows 已补充账号目录检测逻辑，会读取 `%APPDATA%\Tencent\xwechat\config\*.ini` 来定位本机微信数据；Windows 首次使用前需要保持微信打开并已登录，必要时用管理员 PowerShell 运行。
 
 ## Skill 本体
 

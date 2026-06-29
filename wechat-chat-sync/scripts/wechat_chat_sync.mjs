@@ -251,6 +251,65 @@ function macWechatBase() {
   return path.join(realHome(), 'Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files');
 }
 
+function windowsDocumentsDir() {
+  if (process.platform !== 'win32') return path.join(realHome(), 'Documents');
+  const ps = shellWhich('powershell.exe') || shellWhich('powershell');
+  if (ps) {
+    const res = run(ps, ['-NoProfile', '-Command', '[Environment]::GetFolderPath("MyDocuments")'], { check: false });
+    const docs = (res.stdout || '').trim();
+    if (res.status === 0 && docs) return docs;
+  }
+  return path.join(realHome(), 'Documents');
+}
+
+function windowsDataRootFromIni(content) {
+  const trimmed = String(content || '').trim();
+  if (!trimmed) return '';
+  const stripped = trimmed.replace(/[\\/]+$/, '');
+  if (stripped.toLowerCase() === 'mydocument:') return windowsDocumentsDir();
+  return trimmed;
+}
+
+function windowsXwechatConfigDir() {
+  const appdata = process.env.APPDATA || '';
+  return appdata ? path.join(appdata, 'Tencent', 'xwechat', 'config') : '';
+}
+
+function windowsAccountDirsFromConfig() {
+  const configDir = windowsXwechatConfigDir();
+  if (!exists(configDir)) return [];
+  const dirs = [];
+  for (const entry of fs.readdirSync(configDir, { withFileTypes: true })) {
+    if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== '.ini') continue;
+    const iniPath = path.join(configDir, entry.name);
+    const dataRoot = windowsDataRootFromIni(fs.readFileSync(iniPath, 'utf8'));
+    const xwechatFiles = dataRoot ? path.join(dataRoot, 'xwechat_files') : '';
+    if (!exists(xwechatFiles)) continue;
+    for (const account of fs.readdirSync(xwechatFiles, { withFileTypes: true })) {
+      if (!account.isDirectory()) continue;
+      const accountDir = path.join(xwechatFiles, account.name);
+      if (exists(path.join(accountDir, 'db_storage'))) dirs.push(accountDir);
+    }
+  }
+  return [...new Set(dirs)];
+}
+
+function latestDbMtime(dir) {
+  let latest = 0;
+  if (!exists(dir)) return latest;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      latest = Math.max(latest, latestDbMtime(p));
+    } else if (path.extname(entry.name).toLowerCase() === '.db') {
+      try {
+        latest = Math.max(latest, fs.statSync(p).mtimeMs);
+      } catch {}
+    }
+  }
+  return latest;
+}
+
 function candidateAccountDirs() {
   if (process.platform === 'darwin') {
     const base = macWechatBase();
@@ -260,6 +319,7 @@ function candidateAccountDirs() {
       .map(d => path.join(base, d.name))
       .filter(d => exists(path.join(d, 'db_storage')));
   }
+  if (process.platform === 'win32') return windowsAccountDirsFromConfig();
   return [];
 }
 
@@ -273,30 +333,51 @@ function accountMtime(accountDir) {
       return fs.statSync(t).mtimeMs;
     } catch {}
   }
-  return 0;
+  return latestDbMtime(path.join(accountDir, 'db_storage'));
+}
+
+function normalizeAccountDir(p) {
+  const expanded = expandHome(p);
+  if (!expanded) return '';
+  if (path.basename(expanded).toLowerCase() === 'db_storage') {
+    return path.dirname(expanded);
+  }
+  return expanded;
 }
 
 function selectAccountDir() {
-  const provided = expandHome(argValue('--account-dir', ''));
+  const provided = normalizeAccountDir(argValue('--account-dir', ''));
   if (provided) {
     if (!exists(path.join(provided, 'db_storage'))) {
-      throw new Error(`--account-dir must point to xwechat_files/<wxid>; missing db_storage: ${provided}`);
+      throw new Error(`--account-dir must point to xwechat_files/<wxid> or its db_storage folder; missing db_storage: ${provided}`);
     }
     return provided;
   }
   const dirs = candidateAccountDirs().sort((a, b) => accountMtime(b) - accountMtime(a));
+  if (!dirs.length && (process.platform === 'win32' || process.platform === 'linux')) return '';
   if (!dirs.length) throw new Error('No WeChat account dir found. Start WeChat first.');
   return dirs[0];
 }
 
+let runtimeAppData = '';
+
 function runtimeEnv() {
   const env = { ...process.env, HOME: runtimeHome };
   if (process.platform === 'win32') env.USERPROFILE = runtimeHome;
+  if (process.platform === 'win32' && runtimeAppData) env.APPDATA = runtimeAppData;
   return env;
 }
 
 function prepareRuntimeHome(accountDir) {
   mkdirp(runtimeHome);
+  if (process.platform === 'win32' && accountDir) {
+    const dataRoot = path.dirname(path.dirname(accountDir));
+    runtimeAppData = path.join(runtimeHome, 'AppData', 'Roaming');
+    const configDir = path.join(runtimeAppData, 'Tencent', 'xwechat', 'config');
+    mkdirp(configDir);
+    fs.writeFileSync(path.join(configDir, 'selected.ini'), dataRoot, 'utf8');
+    return;
+  }
   if (process.platform !== 'darwin') return;
   const destBase = path.join(runtimeHome, 'Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files');
   mkdirp(destBase);
@@ -306,6 +387,12 @@ function prepareRuntimeHome(accountDir) {
     if (st.isSymbolicLink() || st.isDirectory()) fs.rmSync(link, { recursive: true, force: true });
   }
   fs.symlinkSync(accountDir, link, 'dir');
+}
+
+function accountDirFromDbDir(dbDir) {
+  if (!dbDir) return '';
+  const normalized = normalizeAccountDir(dbDir);
+  return exists(path.join(normalized, 'db_storage')) ? normalized : '';
 }
 
 function ensureWxBinary() {
@@ -357,11 +444,21 @@ function setup() {
   const accountDir = selectAccountDir();
   prepareRuntimeHome(accountDir);
   const wx = ensureWxBinary();
+  const configPath = path.join(runtimeHome, '.wx-cli', 'config.json');
   const keysPath = path.join(runtimeHome, '.wx-cli', 'all_keys.json');
+  const currentConfig = readJson(configPath, {});
+  const configuredAccountDir = accountDirFromDbDir(currentConfig.db_dir || '');
   const existingKeys = readJson(keysPath, {});
   const existingKeyCount = Object.keys(existingKeys).length;
   if (existingKeyCount > 0 && !hasFlag('--force-init')) {
-    return { accountDir, wx, keyCount: existingKeyCount, runtimeHome, reused: true };
+    return {
+      accountDir: accountDir || configuredAccountDir,
+      dbDir: currentConfig.db_dir || '',
+      wx,
+      keyCount: existingKeyCount,
+      runtimeHome,
+      reused: true,
+    };
   }
   macAutoSignIfRequested();
   const initRes = run(wx, ['init', '--force'], { env: runtimeEnv(), stdio: 'pipe', check: false });
@@ -373,7 +470,14 @@ function setup() {
   if (keyCount === 0) {
     throw new Error('wx init produced 0 keys. Ensure the correct WeChat account is active; on macOS rerun with --auto-sign if not already prepared.');
   }
-  return { accountDir, wx, keyCount, runtimeHome };
+  const newConfig = readJson(configPath, {});
+  return {
+    accountDir: accountDir || accountDirFromDbDir(newConfig.db_dir || ''),
+    dbDir: newConfig.db_dir || '',
+    wx,
+    keyCount,
+    runtimeHome,
+  };
 }
 
 function fetchHistory(wx) {

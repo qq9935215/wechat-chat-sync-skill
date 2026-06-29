@@ -13,7 +13,9 @@ Use this skill to turn local WeChat chats into repeatable Markdown knowledge-bas
 
 - Communicate with the user in Chinese.
 - Treat the current computer as local-only; do not upload WeChat data.
-- Default to `filehelper` / `文件传输助手`, but accept other private chats, group chats, or sessions.
+- Default script target is `filehelper` / `文件传输助手`, but the agent must not silently export filehelper when the user's requested chat is unspecified.
+- If the user asks broadly for "微信聊天记录" without naming a target chat, run `chats` first, present the session choices, and wait for the user to choose one. Do not sync until a target is selected.
+- If the user explicitly asks for 文件传输助手/filehelper, use `--chat-username filehelper`.
 - Prefer `--chat-username <username>` for stable chat selection. Use `--chat <显示名>` only for quick attempts or when the name is unambiguous.
 - If the target is not `filehelper`, first list sessions with `chats` or `sessions` and select the row by its stable `username`, not by display name. Display names can contain emoji, change over time, or collide.
 - Prefer `wx history "<chat>" --json --with-meta` over `wx export`; `wx export` can fail even when `history` works.
@@ -59,7 +61,7 @@ When the user is using this skill for the first time on a computer, set a single
 
 > Complete local WeChat incremental sync setup on this computer: install or locate wx-cli, prepare local permissions, select the active WeChat account, list available sessions if needed, import the requested chat once, write sync state, and make later syncs incremental.
 
-Then run:
+If the user explicitly asked for 文件传输助手/filehelper, run:
 
 ```bash
 SCRIPT="<this skill folder>/scripts/wechat_chat_sync.mjs"
@@ -69,13 +71,15 @@ node "$SCRIPT" sync --chat-username filehelper --mode incremental
 
 On the first run, incremental mode has no previous state, so it imports the fetched history and creates the baseline state. Later runs continue from that state.
 
-For a private chat or group chat, do not ask the user to type an emoji-heavy display name. List sessions and pick the stable `username`:
+If the user did not specify a chat, or asks for a private chat/group chat, do not ask the user to type an emoji-heavy display name. List sessions and pick the stable `username`:
 
 ```bash
 SCRIPT="<this skill folder>/scripts/wechat_chat_sync.mjs"
 node "$SCRIPT" chats --limit 50
 node "$SCRIPT" sync --chat-username "<username>"
 ```
+
+If `chats` returns no sessions or fails before listing sessions, diagnose setup first: WeChat may not be open, the user may not be logged in, Windows may not expose `%APPDATA%\Tencent\xwechat\config\*.ini`, or the process may need Administrator permission for memory scanning.
 
 If setup fails on macOS with `task_for_pid` or zero keys:
 
@@ -88,7 +92,7 @@ SCRIPT="<this skill folder>/scripts/wechat_chat_sync.mjs"
 node "$SCRIPT" setup --auto-sign
 ```
 
-On Windows, run setup from Administrator PowerShell if memory scanning fails. This skill includes Windows path handling, but macOS is the verified platform from this machine.
+On Windows, ask the user to keep WeChat open and logged in before setup. The script reads `%APPDATA%\Tencent\xwechat\config\*.ini` to locate `xwechat_files\<wxid>\db_storage`; if memory scanning fails, run setup from Administrator PowerShell. Windows path detection is implemented, but full end-to-end validation still depends on a real Windows WeChat login.
 
 ## Incremental Workflow
 
