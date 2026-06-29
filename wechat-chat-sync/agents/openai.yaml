@@ -1,0 +1,4 @@
+interface:
+  display_name: "微信聊天同步"
+  short_description: "增量同步微信聊天记录到本地知识库"
+  default_prompt: "Use $wechat-chat-sync to sync a WeChat chat into my local knowledge base without duplicates."
